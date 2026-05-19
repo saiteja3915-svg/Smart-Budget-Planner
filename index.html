@@ -1016,8 +1016,11 @@
       overflow-y: auto;
       opacity: 0;
       transform: translateY(24px);
-      transition: opacity 0.4s ease, transform 0.4s ease;
+      transition: opacity 0.35s ease, transform 0.35s ease;
       pointer-events: none;
+      visibility: hidden;
+      z-index: 1;
+      background: var(--bg);
       -webkit-overflow-scrolling: touch;
     }
 
@@ -1025,6 +1028,8 @@
       opacity: 1;
       transform: translateY(0);
       pointer-events: auto;
+      visibility: visible;
+      z-index: 2;
     }
 
     .stagger-enter {
