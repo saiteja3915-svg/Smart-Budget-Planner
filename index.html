@@ -2539,6 +2539,29 @@
   var chatOpen = false;
   var chatAwaitingConfirm = false;
   var chatPendingItems = null;
+  var chatHistory = [];
+  var OPENAI_KEY = null;
+
+  function getOpenAIKey() {
+    if (OPENAI_KEY) return OPENAI_KEY;
+    try { OPENAI_KEY = localStorage.getItem('grocerai_openai_key') || ''; return OPENAI_KEY; } catch(e) { return ''; }
+  }
+
+  function saveOpenAIKey(k) {
+    OPENAI_KEY = k; try { localStorage.setItem('grocerai_openai_key', k); } catch(e) {}
+  }
+
+  async function callOpenAI(messages, opts) {
+    var key = getOpenAIKey();
+    if (!key) throw new Error('No OpenAI key. Add one in Settings or in .env');
+    var resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method:'POST', headers:{ 'Authorization':'Bearer ' + key, 'Content-Type':'application/json' },
+      body: JSON.stringify({ model: opts.model || 'gpt-4o-mini', messages: messages, temperature: opts.temperature || 0.7, max_tokens: opts.max_tokens || 1024 })
+    });
+    var data = await resp.json();
+    if (data.error) throw new Error(data.error.message);
+    return data.choices[0].message.content;
+  }
 
   function toggleAiChat() {
     chatOpen = !chatOpen;
@@ -2587,40 +2610,89 @@
     if (el) el.remove();
   }
 
+  async function askGPT(messages, opts) {
+    addChatTyping();
+    try { var reply = await callOpenAI(messages, opts); removeChatTyping(); addChatMsg(reply, 'bot'); return reply; }
+    catch (err) { removeChatTyping(); addChatMsg('❌ ' + err.message, 'bot'); return null; }
+  }
+
+  function buildSpendingContext() {
+    var expenses = getExpenses();
+    var income = getIncome();
+    var total = expenses.reduce(function(s,e) { return s + e.amount; }, 0);
+    var catMap = {}; expenses.forEach(function(e) { catMap[e.category] = (catMap[e.category] || 0) + e.amount; });
+    var byMonth = {}; expenses.forEach(function(e) { var m = e.date.substring(0,7); byMonth[m] = (byMonth[m] || 0) + e.amount; });
+    return 'User has ' + expenses.length + ' expenses totaling $' + total.toFixed(2) + '. Monthly income: $' + income.toFixed(2) + '. Categories: ' + JSON.stringify(catMap) + '. Monthly: ' + JSON.stringify(byMonth) + '.';
+  }
+
   async function handleChatUpload(file) {
     if (!file) return;
     addChatMsg('📄 Uploaded: ' + file.name, 'user');
+
+    // Check if OpenAI key is available
+    var hasKey = !!getOpenAIKey();
+
+    if (hasKey) {
+      // Use GPT-4o Vision
+      addChatTyping();
+      try {
+        var b64 = await new Promise(function(resolve, reject) {
+          var r = new FileReader();
+          r.onload = function() { return resolve(r.result.split(',')[1]); };
+          r.onerror = reject;
+          r.readAsDataURL(file);
+        });
+        removeChatTyping();
+        addChatMsg('🔍 AI analyzing receipt with Vision...', 'bot');
+        addChatTyping();
+        var reply = await callOpenAI([
+          { role:'system', content:'You are a receipt parser. Extract all grocery items with prices (as numbers) and categories (Vegetables/Fruits/Dairy/Meat/Snacks/Bakery/Other). Also extract the store name and total. Respond with JSON only: { "store":"...", "date":"...", "total":0, "items":[{"name":"...","price":0,"category":"..."}] }' },
+          { role:'user', content: [{ type:'text', text:'Parse this grocery receipt image.' }, { type:'image_url', image_url:{ url:'data:image/jpeg;base64,' + b64 } }] }
+        ], { model:'gpt-4o-mini', max_tokens:2048, temperature:0.1 });
+        removeChatTyping();
+        var data = JSON.parse(reply.replace(/```json|```/g, '').trim());
+        if (data.items && data.items.length) {
+          chatPendingItems = data.items;
+          chatAwaitingConfirm = true;
+          addChatMsg('✅ Found ' + data.items.length + ' items from ' + (data.store || 'receipt') + ' totaling $' + (data.total || data.items.reduce(function(s,i) { return s + i.price; }, 0)).toFixed(2) + '.', 'bot');
+          var snackCount = data.items.filter(function(i) { return i.category === 'Snacks'; }).length;
+          if (snackCount > 0) addChatMsg('🍪 Includes ' + snackCount + ' snack item(s).', 'bot');
+          addChatMsg('Would you like to add these to your dashboard?', 'bot', [
+            { label:'Confirm', cls:'ca-confirm', fn:chatConfirmAdd },
+            { label:'Cancel', cls:'ca-cancel', fn:function() { chatAwaitingConfirm = false; chatPendingItems = null; addChatMsg('Cancelled.', 'bot'); } }
+          ]);
+        } else {
+          addChatMsg('❌ Could not parse receipt. Try a clearer image.', 'bot');
+        }
+      } catch (err) {
+        removeChatTyping();
+        addChatMsg('❌ Vision analysis failed: ' + err.message + '. Falling back to OCR...', 'bot');
+        await chatUploadOCR(file);
+      }
+    } else {
+      addChatMsg('ℹ️ No OpenAI key set. Using local OCR (less accurate). Add a key in Settings for AI-powered scanning.', 'bot');
+      await chatUploadOCR(file);
+    }
+  }
+
+  async function chatUploadOCR(file) {
     addChatTyping();
-    await new Promise(function(r) { return setTimeout(r, 500); });
-    addChatMsg('🔍 Scanning your receipt...', 'bot');
     try {
       var worker = await Tesseract.createWorker('eng');
-      var result = await worker.recognize(file, { logger: function(m) {
-        if (m.status === 'recognizing text') {
-          var pct = Math.round((m.progress || 0) * 100);
-          removeChatTyping();
-          addChatTyping();
-        }
-      }});
+      var result = await worker.recognize(file);
       await worker.terminate();
       removeChatTyping();
       var text = result.data.text;
       var lines = text.split('\n');
       var catKeywords = { milk:'Dairy', cheese:'Dairy', bread:'Bakery', chips:'Snacks', apple:'Fruits', banana:'Fruits', tomato:'Vegetables', onion:'Vegetables', carrot:'Vegetables', egg:'Meat', chicken:'Meat', beef:'Meat', yogurt:'Dairy', butter:'Dairy', cookie:'Snacks', cracker:'Snacks', juice:'Other', water:'Other', soda:'Snacks', rice:'Other', pasta:'Other', sauce:'Other' };
-      var items = lines.map(function(ln) { var m = ln.match(/(.*)\s+(\d+\.\d{2})/); if (m) { return { name:m[1].trim(), price:parseFloat(m[2]) }; } return null; }).filter(Boolean);
+      var items = lines.map(function(ln) { var m = ln.match(/(.*)\s+(\d+\.\d{2})/); if (m) return { name:m[1].trim(), price:parseFloat(m[2]) }; return null; }).filter(Boolean);
       var categorized = items.map(function(it) { var lower = it.name.toLowerCase(); var cat = 'Other'; for (var kw in catKeywords) { if (lower.includes(kw)) { cat = catKeywords[kw]; break; } } return { name:it.name, price:it.price, category:cat }; });
       var total = categorized.reduce(function(s, it) { return s + it.price; }, 0);
-      if (categorized.length === 0) {
-        addChatMsg('❌ Could not extract items from this receipt. Try a clearer image.', 'bot');
-        return;
-      }
-      addChatMsg('✅ Receipt processed successfully.', 'bot');
-      addChatMsg('🛒 Found ' + categorized.length + ' grocery items totaling $' + total.toFixed(2) + '.', 'bot');
-      var snackPct = categorized.filter(function(it) { return it.category === 'Snacks'; }).reduce(function(s,it) { return s + it.price; }, 0) / total * 100;
-      if (snackPct > 25) addChatMsg('⚠️ Snack spending is ' + Math.round(snackPct) + '% of this receipt.', 'bot');
+      if (!categorized.length) { addChatMsg('❌ Could not extract items. Try a clearer image.', 'bot'); return; }
+      addChatMsg('✅ OCR found ' + categorized.length + ' items totaling $' + total.toFixed(2) + '.', 'bot');
       chatPendingItems = categorized;
       chatAwaitingConfirm = true;
-      addChatMsg('Would you like me to add these expenses to your dashboard?', 'bot', [
+      addChatMsg('Would you like to add these to your dashboard?', 'bot', [
         { label:'Confirm', cls:'ca-confirm', fn:chatConfirmAdd },
         { label:'Cancel', cls:'ca-cancel', fn:function() { chatAwaitingConfirm = false; chatPendingItems = null; addChatMsg('Cancelled.', 'bot'); } }
       ]);
@@ -2636,68 +2708,107 @@
     var maxId = expenses.length ? Math.max.apply(null, expenses.map(function(e) { return e.id; })) : 0;
     chatPendingItems.forEach(function(it) {
       maxId++;
-      expenses.push({ id:maxId, name:it.name, category:it.category, store:'Receipt Scan', amount:it.price, date:new Date().toISOString().split('T')[0] });
+      expenses.push({ id:maxId, name:it.name, category:it.category || 'Other', store:'Receipt Scan', amount:it.price, date:new Date().toISOString().split('T')[0] });
     });
     saveExpensesToStorage(expenses);
     refreshAll();
     chatAwaitingConfirm = false;
     chatPendingItems = null;
-    addChatMsg('📊 ' + expenses.length + ' expenses added successfully. Dashboard updated.', 'bot');
+    addChatMsg('📊 ' + expenses.length + ' expenses added. Dashboard updated!', 'bot');
     showToast('Receipt items saved!');
   }
 
-  function chatInsights() {
+  async function chatInsights() {
     var expenses = getExpenses();
-    var total = expenses.reduce(function(s,e) { return s + e.amount; }, 0);
-    var count = expenses.length;
-    if (!count) { addChatMsg('No data yet. Add some expenses first!', 'bot'); return; }
-    var catMap = {};
-    expenses.forEach(function(e) { catMap[e.category] = (catMap[e.category] || 0) + e.amount; });
-    var topCat = Object.keys(catMap).sort(function(a,b) { return catMap[b] - catMap[a]; })[0];
-    var snackTotal = catMap['Snacks'] || 0;
-    var snackPct = total > 0 ? Math.round(snackTotal / total * 100) : 0;
-    addChatMsg('📊 **Grocery Insights**', 'bot');
-    addChatMsg('💰 Total spent: $' + total.toFixed(2) + ' across ' + count + ' transactions.', 'bot');
-    addChatMsg('🥇 Top category: ' + topCat + ' ($' + (catMap[topCat] || 0).toFixed(2) + ')', 'bot');
-    if (snackPct > 20) addChatMsg('⚠️ Snacks are ' + snackPct + '% of spending. Try reducing!', 'bot');
-    else addChatMsg('✅ Snacks are only ' + snackPct + '% — well controlled!', 'bot');
+    if (!expenses.length) { addChatMsg('No data yet. Add some expenses first!', 'bot'); return; }
+    var hasKey = !!getOpenAIKey();
+    if (!hasKey) {
+      addChatMsg('ℹ️ Set an OpenAI key in Settings for AI-powered insights. Showing basic stats instead.', 'bot');
+      var total = expenses.reduce(function(s,e) { return s + e.amount; }, 0);
+      var catMap = {}; expenses.forEach(function(e) { catMap[e.category] = (catMap[e.category] || 0) + e.amount; });
+      var topCat = Object.keys(catMap).sort(function(a,b) { return catMap[b] - catMap[a]; })[0];
+      addChatMsg('💰 Total: $' + total.toFixed(2) + ' across ' + expenses.length + ' transactions.', 'bot');
+      addChatMsg('🥇 Top category: ' + topCat + ' ($' + (catMap[topCat] || 0).toFixed(2) + ')', 'bot');
+      return;
+    }
+    var ctx = buildSpendingContext();
+    await askGPT([
+      { role:'system', content:'You are GrocerAI, a helpful grocery spending assistant. Analyze this data and give 2-3 concise insights with emojis. Be friendly and actionable.' },
+      { role:'user', content: 'Here is my grocery data: ' + ctx + '\n\nGive me insights on my grocery spending.' }
+    ], { temperature:0.7 });
   }
 
-  function chatPredict() {
+  async function chatPredict() {
     var expenses = getExpenses();
     if (!expenses.length) { addChatMsg('Not enough data to predict. Add some expenses first!', 'bot'); return; }
-    var totalPast = expenses.reduce(function(s,e) { return s + e.amount; }, 0);
-    var avgPerDay = totalPast / Math.max(1, expenses.length);
-    var daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
-    var projected = (totalPast / Math.max(1, new Date().getDate())) * daysInMonth;
-    var income = getIncome();
-    addChatMsg('📈 **Monthly Prediction**', 'bot');
-    addChatMsg('📅 Projected spending: $' + projected.toFixed(2) + ' for this month.', 'bot');
-    addChatMsg('📊 Average per transaction: $' + avgPerDay.toFixed(2), 'bot');
-    if (income > 0) {
-      if (projected > income) addChatMsg('⚠️ You\'re on track to exceed your income by $' + (projected - income).toFixed(2) + '.', 'bot');
-      else addChatMsg('✅ Projected to save $' + (income - projected).toFixed(2) + ' this month.', 'bot');
+    var hasKey = !!getOpenAIKey();
+    if (!hasKey) {
+      var total = expenses.reduce(function(s,e) { return s + e.amount; }, 0);
+      var avgPerDay = total / Math.max(1, expenses.length);
+      var daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+      var projected = (total / Math.max(1, new Date().getDate())) * daysInMonth;
+      var income = getIncome();
+      addChatMsg('📅 Projected: $' + projected.toFixed(2) + ' for this month.', 'bot');
+      if (income > 0) {
+        if (projected > income) addChatMsg('⚠️ On track to exceed income by $' + (projected - income).toFixed(2) + '.', 'bot');
+        else addChatMsg('✅ On track to save $' + (income - projected).toFixed(2) + '.', 'bot');
+      }
+      return;
     }
+    var ctx = buildSpendingContext();
+    var income = getIncome();
+    await askGPT([
+      { role:'system', content:'You are a financial predictor. Analyze grocery spending patterns and predict monthly totals. Give advice on how to stay on track. Use emojis.' },
+      { role:'user', content: 'Here is my data: ' + ctx + '\nMonthly income: $' + income.toFixed(2) + '\n\nPredict my monthly spending and give advice.' }
+    ], { temperature:0.7 });
   }
 
-  function chatWarnings() {
+  async function chatWarnings() {
     var expenses = getExpenses();
-    var income = getIncome();
     if (!expenses.length) { addChatMsg('No expenses yet — nothing to warn about!', 'bot'); return; }
-    var total = expenses.reduce(function(s,e) { return s + e.amount; }, 0);
-    var warnings = [];
-    if (income > 0 && total > income) warnings.push('🚨 You\'ve exceeded your income by $' + (total - income).toFixed(2) + '!');
-    var month = new Date().getMonth();
-    var year = new Date().getFullYear();
-    var monthlyTotal = expenses.filter(function(e) { var d = new Date(e.date); return d.getMonth() === month && d.getFullYear() === year; }).reduce(function(s,e) { return s + e.amount; }, 0);
-    if (income > 0 && monthlyTotal > income * 0.8) warnings.push('⚠️ You\'ve used ' + Math.round(monthlyTotal / income * 100) + '% of your monthly income.');
-    var snackTotal = expenses.filter(function(e) { return e.category === 'Snacks'; }).reduce(function(s,e) { return s + e.amount; }, 0);
-    if (total > 0 && snackTotal / total > 0.25) warnings.push('🍪 Snack spending is ' + Math.round(snackTotal / total * 100) + '% of total.');
-    var stores = new Set(expenses.map(function(e) { return e.store; }));
-    if (stores.size > 4) warnings.push('🛒 You shop at ' + stores.size + ' stores. Consolidating saves time and gas.');
-    if (!warnings.length) warnings.push('✅ No warnings! Your grocery habits look great.');
-    addChatMsg('⚠️ **Budget Warnings**', 'bot');
-    warnings.forEach(function(w) { addChatMsg(w, 'bot'); });
+    var hasKey = !!getOpenAIKey();
+    if (!hasKey) {
+      var total = expenses.reduce(function(s,e) { return s + e.amount; }, 0);
+      var income = getIncome();
+      var warnings = [];
+      if (income > 0 && total > income) warnings.push('🚨 Exceeded income by $' + (total - income).toFixed(2));
+      var snackTotal = expenses.filter(function(e) { return e.category === 'Snacks'; }).reduce(function(s,e) { return s + e.amount; }, 0);
+      if (total > 0 && snackTotal / total > 0.25) warnings.push('🍪 Snacks are ' + Math.round(snackTotal/total*100) + '% of total');
+      if (!warnings.length) warnings.push('✅ No warnings!');
+      warnings.forEach(function(w) { addChatMsg(w, 'bot'); });
+      return;
+    }
+    var ctx = buildSpendingContext();
+    var income = getIncome();
+    await askGPT([
+      { role:'system', content:'You are a budget warning system. Analyze the user\'s grocery data and highlight any concerns or warnings. Be direct and specific. Use emojis.' },
+      { role:'user', content: 'Here is my data: ' + ctx + '\nMonthly income: $' + income.toFixed(2) + '\n\nWhat warnings or concerns do you see?' }
+    ], { temperature:0.7 });
+  }
+
+  // Also add OpenAI key setting in the settings page
+  function renderSettingsWithOpenAI() {
+    var key = getOpenAIKey();
+    var card = document.querySelector('.settings-card:last-child');
+    if (!card) return;
+    var div = document.createElement('div');
+    div.className = 'setting-row';
+    div.innerHTML = '<div class="sr-info"><h5>OpenAI API Key</h5><p>For AI receipt scanning and chat insights</p></div><input type="password" id="openaiKeyInput" placeholder="sk-..." style="padding:8px 14px;border-radius:8px;border:1px solid var(--border);font-size:12px;font-family:monospace;background:var(--bg-card);width:200px" value="' + (key ? key.substring(0,20) + '...' : '') + '"><button class="btn-pulse" id="openaiKeyBtn" style="padding:8px 16px;border-radius:50px;border:1px solid var(--border);background:var(--bg-card);cursor:pointer;font-size:11px;font-weight:600" onclick="promptOpenAIKey()">' + (key ? 'Change' : 'Add') + '</button>';
+    card.appendChild(div);
+  }
+
+  function promptOpenAIKey() {
+    var key = prompt('Enter your OpenAI API key (sk-...):');
+    if (key && key.trim().startsWith('sk-')) {
+      saveOpenAIKey(key.trim());
+      var btn = document.getElementById('openaiKeyBtn');
+      if (btn) btn.textContent = 'Change';
+      var inp = document.getElementById('openaiKeyInput');
+      if (inp) inp.value = key.substring(0, 20) + '...';
+      showToast('OpenAI key saved!');
+    } else if (key) {
+      showToast('Invalid key. Must start with sk-');
+    }
   }
 
   // ===== INIT =====
@@ -2722,6 +2833,7 @@
     setTimeout(renderReceiptHistory, 100);
     setTimeout(updateScannerInsights, 200);
     setTimeout(updateHealthScore, 300);
+    setTimeout(renderSettingsWithOpenAI, 150);
     if (!getAuthUser()) {
       setTimeout(function() { document.getElementById('authPrompt').classList.add('open'); }, 300);
     } else {
