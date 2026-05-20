@@ -1,0 +1,61 @@
+# Windows junk
+Thumbs.db
+Desktop.ini
+*.lnk
+NTUSER.DAT*
+ntuser.*
+
+# User profile junk
+Downloads/
+Desktop/
+Documents/My*
+Documents/My */*
+AppData/
+Local Settings/
+Cookies/
+Recent/
+Start Menu/
+Templates/
+SendTo/
+NetHood/
+PrintHood/
+Saved Games/
+Searches/
+Favorites/
+Links/
+Music/
+Videos/
+Pictures/
+Contacts/
+
+# Other projects
+Saiteja/
+Dropbox/
+CrossDevice/
+.vscode/
+.config/
+.cache/
+.local/
+.npm/
+.copilot/
+.codex/
+.antigravity/
+.arduinoIDE/
+.gemini/
+.dropbox_bi/
+.sbx-denybin/
+.packettracer
+
+# Temp files
+*.tmp
+*.log
+*.blf
+*.regtrans-ms
+*.cnpf
+
+# Node
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
