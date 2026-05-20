@@ -1088,7 +1088,7 @@
               <div class="uz-title">Upload Grocery Receipt</div>
               <div class="uz-sub">Drag & drop an image or PDF here, or click to browse</div>
               <button class="uz-btn btn-pulse" onclick="event.stopPropagation();document.getElementById('fileInput').click()">Choose File</button>
-              <input type="file" id="fileInput" accept="image/*,.pdf" style="display:none" onchange="handleFileUpload(this.files[0])">
+              <input type="file" id="fileInput" accept="image/*,.pdf,application/pdf" style="display:none" onchange="handleFileUpload(this.files[0]);this.value=''">
               <div class="upload-progress" id="uploadProgress">
                 <div class="up-bar"><div class="up-fill" id="upFill"></div></div>
                 <div class="up-status"><div class="up-spinner"></div><span id="upStatusText">Scanning receipt...</span></div>
@@ -1922,19 +1922,18 @@
 
   // ===== RECEIPT SCANNER =====
   var scannedData = null;
-  var receiptHistory = JSON.parse(localStorage.getItem('grocerai_receipts') || '[]');
+  var receiptHistory = (function(){ try { return JSON.parse(localStorage.getItem('grocerai_receipts')) || []; } catch(e) { return []; } })();
 
   function saveReceiptHistory() { localStorage.setItem('grocerai_receipts', JSON.stringify(receiptHistory)); }
 
-  function handleFileUpload(file) {
+  async function handleFileUpload(file) {
     if (!file) return;
-    // drag and drop support
     var zone = document.getElementById('uploadZone');
     var progress = document.getElementById('uploadProgress');
     var fill = document.getElementById('upFill');
     var statusText = document.getElementById('upStatusText');
-    var result = document.getElementById('scanResult');
-    result.classList.remove('show');
+    var scanResult = document.getElementById('scanResult');
+    scanResult.classList.remove('show');
     scannedData = null;
     progress.classList.add('show');
     fill.style.width = '10%';
@@ -1947,11 +1946,10 @@
         fill.style.width = pct + '%';
       }
     };
-    reader.onload = function(e) {
+    reader.onload = async function(e) {
       fill.style.width = '30%';
       statusText.innerHTML = '🔍 AI analyzing receipt...';
       var imgSrc = e.target.result;
-      // show preview
       zone.style.backgroundImage = 'url(' + imgSrc + ')';
       zone.style.backgroundSize = 'cover';
       zone.style.backgroundPosition = 'center';
@@ -1961,16 +1959,21 @@
       zone.querySelector('.uz-btn').style.display = 'none';
       document.getElementById('scanLines').style.display = 'block';
 
-      // Run Tesseract OCR
-      Tesseract.recognize(imgSrc, 'eng', {
-        logger: function(m) {
-          if (m.status === 'recognizing text') {
-            var pct = Math.round(30 + (m.progress || 0) * 50);
-            fill.style.width = Math.min(pct, 80) + '%';
-            statusText.innerHTML = '🧠 Extracting items... ' + Math.round((m.progress || 0) * 100) + '%';
+      try {
+        statusText.innerHTML = '🧠 Loading OCR engine...';
+        var worker = await Tesseract.createWorker('eng');
+        statusText.innerHTML = '🧠 Extracting text...';
+        var result = await worker.recognize(imgSrc, {
+          logger: function(m) {
+            if (m.status === 'recognizing text') {
+              var pct = Math.round(30 + (m.progress || 0) * 50);
+              fill.style.width = Math.min(pct, 80) + '%';
+              statusText.innerHTML = '🧠 Extracting items... ' + Math.round((m.progress || 0) * 100) + '%';
+            }
           }
-        }
-      }).then(function(result) {
+        });
+        await worker.terminate();
+
         fill.style.width = '90%';
         statusText.innerHTML = '📋 Categorizing items...';
         var text = result.data.text;
@@ -1981,7 +1984,7 @@
             progress.classList.remove('show');
             document.getElementById('scanLines').style.display = 'none';
             if (scannedData) {
-              result.classList.add('show');
+              scanResult.classList.add('show');
               statusText.textContent = 'Scan complete!';
               showToast('Receipt scanned successfully!');
             } else {
@@ -1990,10 +1993,10 @@
             }
           }, 400);
         }, 300);
-      }).catch(function(err) {
+      } catch (err) {
         statusText.textContent = 'OCR failed: ' + err.message;
         setTimeout(function() { progress.classList.remove('show'); resetUploadZone(); }, 3000);
-      });
+      }
     };
     reader.readAsDataURL(file);
   }
