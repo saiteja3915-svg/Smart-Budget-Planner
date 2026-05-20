@@ -1573,13 +1573,8 @@
     filterExpenses();
   }
 
-  document.addEventListener('DOMContentLoaded', function() {
-    var es = document.getElementById('expenseSearch');
-    if (es) es.addEventListener('input', filterExpenses);
-  });
-  // Also attach directly in case DOMContentLoaded already fired
-  var es2 = document.getElementById('expenseSearch');
-  if (es2) es2.addEventListener('input', filterExpenses);
+  var es = document.getElementById('expenseSearch');
+  if (es) es.addEventListener('input', filterExpenses);
 
   function topbarSearchGo() {
     var q = document.getElementById('topbarSearch').value.trim();
