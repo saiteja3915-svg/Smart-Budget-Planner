@@ -840,8 +840,8 @@
       </div>
       <div class="sd-nav">
         <div class="sidebar-label">Navigation</div>
-        <button class="sidebar-item" data-page="home"><svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>Home</button>
-        <button class="sidebar-item active" data-page="dashboard"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Dashboard</button>
+        <button class="sidebar-item active" data-page="home"><svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>Home</button>
+        <button class="sidebar-item" data-page="dashboard"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Dashboard</button>
         <button class="sidebar-item" data-page="expenses"><svg viewBox="0 0 24 24"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>Expenses</button>
         <button class="sidebar-item" data-page="categories"><svg viewBox="0 0 24 24"><path d="M4 21v-7"/><path d="M10 21v-7"/><path d="M16 21v-7"/><path d="M22 21v-7"/><path d="M2 10l10-8 10 8"/></svg>Categories</button>
         <button class="sidebar-item" data-page="budgets"><svg viewBox="0 0 24 24"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>Budgets</button>
@@ -2288,7 +2288,7 @@
   topbarLinks.forEach(link => {
     link.addEventListener('click', e => { e.preventDefault(); navigateTo(link.getAttribute('href').replace('#', '')); });
   });
-  window.addEventListener('popstate', function() { navigateTo(location.hash.replace('#', '') || 'dashboard'); });
+  window.addEventListener('popstate', function() { navigateTo(location.hash.replace('#', '') || 'home'); });
 
   // ===== AUTH =====
   function getAuthUser() {
@@ -2441,7 +2441,7 @@
     seedData();
     refreshAll();
     setTimeout(updateReportChart, 300);
-    var initialHash = location.hash.replace('#', '') || 'dashboard';
+    var initialHash = location.hash.replace('#', '') || 'home';
     // Force stagger animation on the initial page
     var initPage = document.getElementById(initialHash);
     if (initPage) {
